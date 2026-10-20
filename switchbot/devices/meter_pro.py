@@ -10,10 +10,17 @@ COMMAND_GET_TIME_OFFSET = "570f690506"
 MAX_TIME_OFFSET = (1 << 24) - 1
 
 COMMAND_GET_DEVICE_DATETIME = "570f6901"
+COMMAND_GET_DEVICE_DATETIME_EPOCH = "57000603"
 COMMAND_SET_DEVICE_DATETIME = "57000503"
 COMMAND_SET_DISPLAY_FORMAT = "570f680505"
 COMMAND_GET_WEATHER = "570f6906"
 COMMAND_SET_WEATHER = "570f680601"
+
+SETTINGS_HEADER = "570f68"
+COMMAND_FORCE_NEW_CO2_MEASUREMENT = f"{SETTINGS_HEADER}0b04"
+COMMAND_CALIBRATE_CO2_SENSOR = f"{SETTINGS_HEADER}0b02"
+COMMAND_CO2_THRESHOLDS = f"{SETTINGS_HEADER}020302"
+COMMAND_CO2_UPDATE_INTERVAL = f"{SETTINGS_HEADER}0b06"
 
 
 def _weather_decimal(value: float | Decimal, name: str) -> Decimal:
@@ -138,6 +145,21 @@ class SwitchbotMeterPro(SwitchbotDevice):
             "second": result[12],
         }
 
+    async def get_datetime_epoch(self) -> dict[str, Any]:
+        """
+        Get the internal device UTC timestamp and timezone byte.
+        Response format: 01-0e-00-00-00-00-6a-d7-6c-bf
+        """
+        result = await self._send_command(COMMAND_GET_DEVICE_DATETIME_EPOCH)
+        result = self._validate_result("get_datetime_epoch", result, min_length=10)
+        utc_byte = result[1]
+        utc_offset_hours = utc_byte - 12
+        timestamp = int.from_bytes(result[2:10], "big")
+        return {
+            "timestamp": timestamp,
+            "utc_offset_hours": utc_offset_hours,
+        }
+
     async def set_datetime(
         self, timestamp: int, utc_offset_hours: int = 0, utc_offset_minutes: int = 0
     ) -> None:
@@ -213,6 +235,60 @@ class SwitchbotMeterPro(SwitchbotDevice):
 
 class SwitchbotMeterProCO2(SwitchbotMeterPro):
     """API to control Switchbot Meter Pro CO2."""
+
+    async def force_new_co2_measurement(self) -> None:
+        """Requests a new CO2 measurement, regardless of update interval."""
+        result = await self._send_command(COMMAND_FORCE_NEW_CO2_MEASUREMENT)
+        self._validate_result("force_new_co2_measurement", result)
+
+    async def calibrate_co2_sensor(self) -> None:
+        """
+        Calibrate CO2-Sensor.
+        Place your device in a well-ventilated area for 1 minute before calling this.
+        After calling this the calibration runs for about 5 minutes.
+        Keep the device still during this process.
+        """
+        result = await self._send_command(COMMAND_CALIBRATE_CO2_SENSOR)
+        self._validate_result("calibrate_co2_sensor", result)
+
+    async def set_co2_update_interval(self, seconds: int) -> None:
+        """
+        Sets the interval in which co2 levels are measured in battery powered mode.
+        Original App assumes seconds in {5*60, 10*60, 30*60}
+        """
+        result = await self._send_command(
+            COMMAND_CO2_UPDATE_INTERVAL + f"{seconds:04x}"
+        )
+        self._validate_result("set_co2_update_interval", result)
+
+    async def set_co2_thresholds(self, lower: int, upper: int) -> None:
+        """
+        Sets the thresholds to define Air Quality for depiction on display as follows:
+        co2 < lower => Good (Green)
+        lower < co2 < upper => Moderate (Orange)
+        upper < co2 => Poor (Red)
+
+        Original App assumes:
+        500 <= lower < upper <= 1900
+        lower and upper are multiples of 100
+        """
+        if lower < 500:
+            raise SwitchbotOperationError(
+                "Original App assumes that lower threshold is at least 500"
+            )
+        if upper > 1900:
+            raise SwitchbotOperationError(
+                "Original App assumes that upper threshold is at most 1900"
+            )
+        if lower >= upper:
+            raise SwitchbotOperationError(
+                "Lower threshold should be smaller than upper threshold"
+            )
+
+        result = await self._send_command(
+            COMMAND_CO2_THRESHOLDS + f"{lower:04x}" + f"{upper:04x}"
+        )
+        self._validate_result("set_co2_thresholds", result)
 
     def _parse_weather(self, result: bytes | None) -> tuple[MeterProWeatherIcon, bytes]:
         result = self._validate_result("get_weather", result, min_length=5)
