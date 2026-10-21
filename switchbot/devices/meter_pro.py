@@ -313,6 +313,12 @@ class SwitchbotMeterPro(SwitchbotDevice):
         result = await self._send_command(payload)
         self._validate_result("set_button_function", result)
 
+    async def get_temperature_update_interval(self) -> int:
+        """Get the interval in which temperature and humidity are measured in seconds."""
+        result = await self._send_command(f"{QUERY_HEADER}0701")
+        result = self._validate_result("get_temperature_update_interval", result, min_length=17)
+        return (result[15] << 8) | result[16]
+
     async def set_temperature_update_interval(self, seconds: int) -> None:
         """
         Sets the interval in which temperature and humidity are measured in battery powered mode.
