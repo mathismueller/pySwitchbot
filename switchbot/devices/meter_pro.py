@@ -381,8 +381,38 @@ class SwitchbotMeterPro(SwitchbotDevice):
         }
         if len(result) >= 18:
             data["outdoor_mode"] = bool(result[1] & 0x80)
+            mac_1 = ":".join(f"{b:02x}" for b in result[3:9])
+            mac_2 = ":".join(f"{b:02x}" for b in result[9:15])
+            data["external_sensor_mac_1"] = mac_1 if mac_1 != "00:00:00:00:00:00" else None
+            data["external_sensor_mac_2"] = mac_2 if mac_2 != "00:00:00:00:00:00" else None
             data["temperature_update_interval"] = int.from_bytes(result[15:17], "big")
         return data
+
+    async def set_external_sensor_mac(self, mac_address: str, slot: int = 1) -> None:
+        """
+        Set the MAC address of an external sensor for local display.
+
+        slot: 1 or 2.
+        mac_address: standard MAC format (e.g. 'AA:BB:CC:DD:EE:FF') or 12 hex chars.
+                     Pass empty string or '00:00:00:00:00:00' to clear/reset the slot.
+        """
+        if slot not in (1, 2):
+            raise ValueError(f"Slot must be 1 or 2, got {slot}")
+
+        clean_mac = mac_address.replace(":", "").replace("-", "").strip()
+        if not clean_mac:
+            clean_mac = "000000000000"
+        if len(clean_mac) != 12:
+            raise ValueError(f"Invalid MAC address format: {mac_address}")
+        try:
+            bytes.fromhex(clean_mac)
+        except ValueError as err:
+            raise ValueError(f"Invalid hex in MAC address: {mac_address}") from err
+
+        slot_byte = f"{slot:02x}"
+        payload = f"{SETTINGS_HEADER}0701{slot_byte}{clean_mac.lower()}"
+        result = await self._send_command(payload)
+        self._validate_result("set_external_sensor_mac", result)
 
     async def get_temperature_humidity_offsets(self) -> dict[str, Any]:
         """Get temperature and humidity calibration offsets."""

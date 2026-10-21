@@ -477,6 +477,34 @@ async def test_get_device_settings():
     device._send_command.assert_called_with("570f690701")
     assert settings["outdoor_mode"] is True
     assert settings["temperature_update_interval"] == 1800
+    assert settings["external_sensor_mac_1"] is None
+    assert settings["external_sensor_mac_2"] is None
+
+
+@pytest.mark.asyncio
+async def test_set_external_sensor_mac():
+    device = create_device()
+    device._send_command.return_value = bytes.fromhex("01")
+
+    # Slot 1
+    await device.set_external_sensor_mac("AA:BB:CC:DD:EE:FF", slot=1)
+    device._send_command.assert_called_with("570f68070101aabbccddeeff")
+
+    # Slot 2
+    await device.set_external_sensor_mac("11-22-33-44-55-66", slot=2)
+    device._send_command.assert_called_with("570f68070102112233445566")
+
+    # Clear slot 1
+    await device.set_external_sensor_mac("", slot=1)
+    device._send_command.assert_called_with("570f68070101000000000000")
+
+    # Invalid slot
+    with pytest.raises(ValueError, match="Slot must be 1 or 2"):
+        await device.set_external_sensor_mac("AA:BB:CC:DD:EE:FF", slot=3)
+
+    # Invalid MAC
+    with pytest.raises(ValueError, match="Invalid MAC address format"):
+        await device.set_external_sensor_mac("AA:BB", slot=1)
 
 
 @pytest.mark.asyncio
