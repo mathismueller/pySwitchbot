@@ -278,7 +278,7 @@ class SwitchbotMeterPro(SwitchbotDevice):
 
     async def set_date_display_format(self, is_month_first: bool = True) -> None:
         """Set the date display format (Month/Day vs Day/Month)."""
-        mode_byte = "01" if is_month_first else "00"
+        mode_byte = "00" if is_month_first else "01"
         payload = f"{COMMAND_SET_DATE_FORMAT}{mode_byte}"
         result = await self._send_command(payload)
         self._validate_result("set_date_display_format", result)

@@ -342,8 +342,8 @@ async def test_set_co2_thresholds_throws_on_invalid_input(
 @pytest.mark.parametrize(
     ("is_month_first", "expected_payload"),
     [
-        (True, "01"),
-        (False, "00"),
+        (True, "00"),
+        (False, "01"),
     ],
 )
 async def test_set_date_display_format(is_month_first: bool, expected_payload: str):
