@@ -18,13 +18,15 @@ COMMAND_GET_DEVICE_DATETIME_EPOCH = "57000603"
 COMMAND_SET_DEVICE_DATETIME = "57000503"
 COMMAND_SET_DISPLAY_FORMAT = f"{SETTINGS_HEADER}0505"
 COMMAND_SET_DATE_FORMAT = f"{SETTINGS_HEADER}070107"
+COMMAND_SHOW_BATTERY_LEVEL = f"{SETTINGS_HEADER}070108"
 COMMAND_DISPLAY_DATA_SOURCE = f"{SETTINGS_HEADER}0701030f"
 COMMAND_BUTTON_FUNCTION = f"{SETTINGS_HEADER}070106"
 COMMAND_TEMPERATURE_UPDATE_INTERVAL = f"{SETTINGS_HEADER}070105"
 COMMAND_COMFORTLEVEL = f"{SETTINGS_HEADER}020188"
 COMMAND_ALERT_SOUND = f"{SETTINGS_HEADER}0204"
 COMMAND_GET_DEVICE_SETTINGS = f"{QUERY_HEADER}0701"
-COMMAND_GET_TEMPERATURE_HUMIDITY_OFFSETS = f"{QUERY_HEADER}0704"
+COMMAND_GET_TEMPERATURE_HUMIDITY_OFFSETS = f"{QUERY_HEADER}03"
+COMMAND_SET_TEMPERATURE_HUMIDITY_OFFSETS = f"{SETTINGS_HEADER}03"
 
 COMMAND_GET_WEATHER = f"{QUERY_HEADER}06"
 COMMAND_SET_WEATHER = f"{SETTINGS_HEADER}0601"
@@ -282,6 +284,13 @@ class SwitchbotMeterPro(SwitchbotDevice):
         result = await self._send_command(payload)
         self._validate_result("set_date_display_format", result)
 
+    async def show_battery_level(self, show_battery: bool) -> None:
+        """Set whether to show the battery indicator on the physical screen."""
+        mode_byte = "01" if show_battery else "00"
+        payload = f"{COMMAND_SHOW_BATTERY_LEVEL}{mode_byte}"
+        result = await self._send_command(payload)
+        self._validate_result("show_battery_level", result)
+
     async def set_display_data_source(self, outdoor: bool = False) -> None:
         """Set the screen data source: indoor sensor readings or outdoor network display."""
         mode_byte = "02" if outdoor else "01"
@@ -373,18 +382,43 @@ class SwitchbotMeterPro(SwitchbotDevice):
         """Get temperature and humidity calibration offsets."""
         result = await self._send_command(COMMAND_GET_TEMPERATURE_HUMIDITY_OFFSETS)
         result = self._validate_result(
-            "get_temperature_humidity_offsets", result, min_length=3
+            "get_temperature_humidity_offsets", result, min_length=4
         )
-        temp_raw = result[1]
+        temp_raw = result[2]
         temp_offset = (
-            (temp_raw - 128) / 10.0 if temp_raw & 0x80 else temp_raw / 10.0
+            (temp_raw - 128) / 10.0 if temp_raw & 0x80 else (temp_raw / 10.0 if temp_raw else 0.0)
         )
-        hum_offset = result[2]
+        hum_raw = result[3]
+        hum_offset = (hum_raw - 128) if (hum_raw & 0x80 and result[1] & 0x80) else hum_raw
         return {
             "temperature_offset": temp_offset,
             "humidity_offset": hum_offset,
             "raw": result[1:].hex(),
         }
+
+    async def set_temperature_humidity_offsets(
+        self, temperature_offset: float = 0.0, humidity_offset: int = 0
+    ) -> None:
+        """
+        Set temperature and humidity calibration offsets.
+
+        temperature_offset: float offset in 0.1 °C steps
+        humidity_offset: integer percentage offset in 1% steps
+        """
+        b0 = 0x80 if humidity_offset != 0 else 0x00
+        if temperature_offset > 0:
+            b1 = int(round(temperature_offset * 10)) + 128
+        elif temperature_offset < 0:
+            b1 = abs(int(round(temperature_offset * 10)))
+        else:
+            b1 = 0
+
+        b2 = abs(humidity_offset) if humidity_offset >= 0 else (abs(humidity_offset) + 128)
+        payload = (
+            f"{COMMAND_SET_TEMPERATURE_HUMIDITY_OFFSETS}{b0:02x}{b1:02x}{b2:02x}"
+        )
+        result = await self._send_command(payload)
+        self._validate_result("set_temperature_humidity_offsets", result)
 
     def _validate_result(
         self, op_name: str, result: bytes | None, min_length: int | None = None

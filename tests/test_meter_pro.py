@@ -480,14 +480,47 @@ async def test_get_device_settings():
 
 
 @pytest.mark.asyncio
+async def test_show_battery_level():
+    device = create_device()
+    device._send_command.return_value = bytes.fromhex("01")
+
+    await device.show_battery_level(True)
+    device._send_command.assert_called_with("570f6807010801")
+
+    await device.show_battery_level(False)
+    device._send_command.assert_called_with("570f6807010800")
+
+
+@pytest.mark.asyncio
 async def test_get_temperature_humidity_offsets():
     device = create_device()
-    device._send_command.return_value = bytes.fromhex("010000")
+    device._send_command.return_value = bytes.fromhex("01808101")
 
     offsets = await device.get_temperature_humidity_offsets()
-    device._send_command.assert_called_with("570f690704")
-    assert offsets["temperature_offset"] == 0.0
-    assert offsets["humidity_offset"] == 0
+    device._send_command.assert_called_with("570f6903")
+    assert offsets["temperature_offset"] == 0.1
+    assert offsets["humidity_offset"] == 1
+
+
+@pytest.mark.asyncio
+async def test_set_temperature_humidity_offsets():
+    device = create_device()
+    device._send_command.return_value = bytes.fromhex("01")
+
+    await device.set_temperature_humidity_offsets(
+        temperature_offset=0.2, humidity_offset=0
+    )
+    device._send_command.assert_called_with("570f6803008200")
+
+    await device.set_temperature_humidity_offsets(
+        temperature_offset=0.1, humidity_offset=2
+    )
+    device._send_command.assert_called_with("570f6803808102")
+
+    await device.set_temperature_humidity_offsets(
+        temperature_offset=0.0, humidity_offset=0
+    )
+    device._send_command.assert_called_with("570f6803000000")
 
 
 @pytest.mark.asyncio
