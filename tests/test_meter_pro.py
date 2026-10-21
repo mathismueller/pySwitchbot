@@ -636,3 +636,15 @@ async def test_get_history():
     assert history[0]["temperature"] == 21.9
     assert history[0]["humidity"] == 53
     assert history[0]["co2"] == 408
+
+
+@pytest.mark.asyncio
+async def test_get_basic_info():
+    device = create_device()
+    # 01 (status), 64 (100% battery), 15 (v2.1 firmware = 21)
+    device._send_command.return_value = bytes.fromhex("016415")
+
+    info = await device.get_basic_info()
+    device._send_command.assert_called_with(key="5702", retry=device._retry_count)
+    assert info["battery"] == 100
+    assert info["firmware"] == 2.1
