@@ -488,15 +488,15 @@ async def test_set_external_sensor_mac():
 
     # Slot 1
     await device.set_external_sensor_mac("AA:BB:CC:DD:EE:FF", slot=1)
-    device._send_command.assert_called_with("570f68070101aabbccddeeff")
+    device._send_command.assert_called_with("570f680701010000aabbccddeeff")
 
     # Slot 2
     await device.set_external_sensor_mac("11-22-33-44-55-66", slot=2)
-    device._send_command.assert_called_with("570f68070102112233445566")
+    device._send_command.assert_called_with("570f680701020000112233445566")
 
     # Clear slot 1
     await device.set_external_sensor_mac("", slot=1)
-    device._send_command.assert_called_with("570f68070101000000000000")
+    device._send_command.assert_called_with("570f680701010000000000000000")
 
     # Invalid slot
     with pytest.raises(ValueError, match="Slot must be 1 or 2"):

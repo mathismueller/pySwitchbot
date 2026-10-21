@@ -410,7 +410,7 @@ class SwitchbotMeterPro(SwitchbotDevice):
             raise ValueError(f"Invalid hex in MAC address: {mac_address}") from err
 
         slot_byte = f"{slot:02x}"
-        payload = f"{SETTINGS_HEADER}0701{slot_byte}{clean_mac.lower()}"
+        payload = f"{SETTINGS_HEADER}0701{slot_byte}0000{clean_mac.lower()}"
         result = await self._send_command(payload)
         self._validate_result("set_external_sensor_mac", result)
 
