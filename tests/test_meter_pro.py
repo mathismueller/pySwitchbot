@@ -356,22 +356,6 @@ async def test_set_date_display_format(is_month_first: bool, expected_payload: s
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("show_battery", "expected_payload"),
-    [
-        (True, "01"),
-        (False, "00"),
-    ],
-)
-async def test_show_battery_level(show_battery: bool, expected_payload: str):
-    device = create_device()
-    device._send_command.return_value = bytes.fromhex("01")
-
-    await device.show_battery_level(show_battery=show_battery)
-    device._send_command.assert_called_with("570f68070108" + expected_payload)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
     ("outdoor", "expected_payload"),
     [
         (True, "02"),

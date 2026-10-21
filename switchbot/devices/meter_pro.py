@@ -18,7 +18,6 @@ COMMAND_GET_DEVICE_DATETIME_EPOCH = "57000603"
 COMMAND_SET_DEVICE_DATETIME = "57000503"
 COMMAND_SET_DISPLAY_FORMAT = f"{SETTINGS_HEADER}0505"
 COMMAND_SET_DATE_FORMAT = f"{SETTINGS_HEADER}070107"
-COMMAND_SHOW_BATTERY_LEVEL = f"{SETTINGS_HEADER}070108"
 COMMAND_DISPLAY_DATA_SOURCE = f"{SETTINGS_HEADER}0701030f"
 COMMAND_BUTTON_FUNCTION = f"{SETTINGS_HEADER}070106"
 COMMAND_TEMPERATURE_UPDATE_INTERVAL = f"{SETTINGS_HEADER}070105"
@@ -282,13 +281,6 @@ class SwitchbotMeterPro(SwitchbotDevice):
         payload = f"{COMMAND_SET_DATE_FORMAT}{mode_byte}"
         result = await self._send_command(payload)
         self._validate_result("set_date_display_format", result)
-
-    async def show_battery_level(self, show_battery: bool = True) -> None:
-        """Show or hide battery percentage level on the display."""
-        show_battery_byte = "01" if show_battery else "00"
-        payload = f"{COMMAND_SHOW_BATTERY_LEVEL}{show_battery_byte}"
-        result = await self._send_command(payload)
-        self._validate_result("show_battery_level", result)
 
     async def set_display_data_source(self, outdoor: bool = False) -> None:
         """Set the screen data source: indoor sensor readings or outdoor network display."""
