@@ -391,6 +391,24 @@ async def test_set_button_function(
 
 
 @pytest.mark.asyncio
+async def test_set_button_toggle_unit_and_data_source():
+    device = create_device()
+    device._send_command.return_value = bytes.fromhex("01")
+
+    await device.set_button_toggle_unit(True)
+    device._send_command.assert_called_with("570f680701060000")
+
+    await device.set_button_toggle_data_source(True)
+    device._send_command.assert_called_with("570f680701060001")
+
+    await device.set_button_toggle_unit(False)
+    device._send_command.assert_called_with("570f680701060101")
+
+    await device.set_button_toggle_data_source(False)
+    device._send_command.assert_called_with("570f680701060100")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("minutes", "expected_payload"),
     [

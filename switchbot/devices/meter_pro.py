@@ -298,6 +298,9 @@ class SwitchbotMeterPro(SwitchbotDevice):
         result = await self._send_command(payload)
         self._validate_result("set_display_data_source", result)
 
+    _button_change_unit: bool = False
+    _button_change_data_source: bool = False
+
     async def set_button_function(
         self, change_unit: bool = False, change_data_source: bool = False
     ) -> None:
@@ -307,11 +310,27 @@ class SwitchbotMeterPro(SwitchbotDevice):
         change_unit: switch between ℃ and ℉.
         change_data_source: switch between display of indoor and outdoor readings.
         """
+        self._button_change_unit = change_unit
+        self._button_change_data_source = change_data_source
         change_unit_byte = "00" if change_unit else "01"
         change_data_source_byte = "01" if change_data_source else "00"
         payload = f"{COMMAND_BUTTON_FUNCTION}{change_unit_byte}{change_data_source_byte}"
         result = await self._send_command(payload)
         self._validate_result("set_button_function", result)
+
+    async def set_button_toggle_unit(self, enable: bool) -> None:
+        """Enable or disable temperature unit toggle on top physical button."""
+        await self.set_button_function(
+            change_unit=enable,
+            change_data_source=self._button_change_data_source,
+        )
+
+    async def set_button_toggle_data_source(self, enable: bool) -> None:
+        """Enable or disable data source toggle on top physical button."""
+        await self.set_button_function(
+            change_unit=self._button_change_unit,
+            change_data_source=enable,
+        )
 
     async def get_temperature_update_interval(self) -> int:
         """Get the interval in which temperature and humidity are measured in seconds."""
@@ -386,6 +405,8 @@ class SwitchbotMeterPro(SwitchbotDevice):
             data["external_sensor_mac_1"] = mac_1 if mac_1 != "00:00:00:00:00:00" else None
             data["external_sensor_mac_2"] = mac_2 if mac_2 != "00:00:00:00:00:00" else None
             data["temperature_update_interval"] = int.from_bytes(result[15:17], "big")
+            if len(result) >= 19:
+                data["button_change_data_source"] = bool(result[18] == 1)
         return data
 
     async def set_external_sensor_mac(self, mac_address: str, slot: int = 1) -> None:
