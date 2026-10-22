@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 from bleak.backends.device import BLEDevice
@@ -358,8 +358,8 @@ async def test_set_date_display_format(is_month_first: bool, expected_payload: s
 @pytest.mark.parametrize(
     ("outdoor", "expected_payload"),
     [
-        (True, "02"),
-        (False, "01"),
+        (True, "0202"),
+        (False, "0101"),
     ],
 )
 async def test_set_display_data_source(outdoor: bool, expected_payload: str):
@@ -367,7 +367,7 @@ async def test_set_display_data_source(outdoor: bool, expected_payload: str):
     device._send_command.return_value = bytes.fromhex("01")
 
     await device.set_display_data_source(outdoor=outdoor)
-    device._send_command.assert_called_with("570f680701030f" + expected_payload)
+    device._send_command.assert_called_with("570f68070103" + expected_payload)
 
 
 @pytest.mark.asyncio
@@ -396,16 +396,16 @@ async def test_set_button_toggle_unit_and_data_source():
     device._send_command.return_value = bytes.fromhex("01")
 
     await device.set_button_toggle_unit(True)
-    device._send_command.assert_called_with("570f680701060000")
+    device._send_command.assert_called_with("570f6807010600ff")
 
     await device.set_button_toggle_data_source(True)
-    device._send_command.assert_called_with("570f680701060001")
+    device._send_command.assert_called_with("570f68070106ff01")
 
     await device.set_button_toggle_unit(False)
-    device._send_command.assert_called_with("570f680701060101")
+    device._send_command.assert_called_with("570f6807010601ff")
 
     await device.set_button_toggle_data_source(False)
-    device._send_command.assert_called_with("570f680701060100")
+    device._send_command.assert_called_with("570f68070106ff00")
 
 
 @pytest.mark.asyncio
@@ -488,7 +488,7 @@ async def test_set_alert_sound_invalid_volume():
 async def test_get_device_settings():
     device = create_device()
     device._send_command.return_value = bytes.fromhex(
-        "01f1050000000000000000000000000708000001"
+        "0122050000000000000000000000000708000001"
     )
 
     settings = await device.get_device_settings()
@@ -498,23 +498,56 @@ async def test_get_device_settings():
     assert settings["external_sensor_mac_1"] is None
     assert settings["external_sensor_mac_2"] is None
 
+    # Test indoor mode (0x11)
+    device._send_command.return_value = bytes.fromhex(
+        "0111050000000000000000000000000708000001"
+    )
+    settings = await device.get_device_settings()
+    assert settings["outdoor_mode"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_display_data_source():
+    device = create_device()
+    device._send_command.return_value = bytes.fromhex(
+        "0122050000000000000000000000000708000001"
+    )
+    assert await device.get_display_data_source() is True
+
+    device._send_command.return_value = bytes.fromhex(
+        "0111050000000000000000000000000708000001"
+    )
+    assert await device.get_display_data_source() is False
+
 
 @pytest.mark.asyncio
 async def test_set_external_sensor_mac():
     device = create_device()
     device._send_command.return_value = bytes.fromhex("01")
 
-    # Slot 1
+    # Slot 1 with switch_display=True (default: icon_mode=0x02, device_type=0x03, switches display to 0202)
     await device.set_external_sensor_mac("AA:BB:CC:DD:EE:FF", slot=1)
-    device._send_command.assert_called_with("570f680701010000aabbccddeeff")
+    device._send_command.assert_has_calls(
+        [
+            call("570f680701010203aabbccddeeff"),
+            call("570f680701030202"),
+        ]
+    )
 
-    # Slot 2
-    await device.set_external_sensor_mac("11-22-33-44-55-66", slot=2)
-    device._send_command.assert_called_with("570f680701020000112233445566")
+    # Slot 2 with switch_display=False
+    device._send_command.reset_mock()
+    await device.set_external_sensor_mac("11-22-33-44-55-66", slot=2, switch_display=False)
+    device._send_command.assert_called_once_with("570f680701020203112233445566")
 
-    # Clear slot 1
+    # Clear slot 1 with switch_display=True (icon_mode=0x01, device_type=0x00, switches display to 0101)
+    device._send_command.reset_mock()
     await device.set_external_sensor_mac("", slot=1)
-    device._send_command.assert_called_with("570f680701010000000000000000")
+    device._send_command.assert_has_calls(
+        [
+            call("570f680701010100000000000000"),
+            call("570f680701030101"),
+        ]
+    )
 
     # Invalid slot
     with pytest.raises(ValueError, match="Slot must be 1 or 2"):

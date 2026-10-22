@@ -21,7 +21,7 @@ COMMAND_SET_DEVICE_DATETIME = "57000503"
 COMMAND_SET_DISPLAY_FORMAT = f"{SETTINGS_HEADER}0505"
 COMMAND_SET_DATE_FORMAT = f"{SETTINGS_HEADER}070107"
 COMMAND_SHOW_BATTERY_LEVEL = f"{SETTINGS_HEADER}070108"
-COMMAND_DISPLAY_DATA_SOURCE = f"{SETTINGS_HEADER}0701030f"
+COMMAND_DISPLAY_DATA_SOURCE = f"{SETTINGS_HEADER}070103"
 COMMAND_BUTTON_FUNCTION = f"{SETTINGS_HEADER}070106"
 COMMAND_GET_BUTTON_FUNCTION = f"{QUERY_HEADER}0704"
 COMMAND_SET_FACTORY_TEMPERATURE_UNIT = f"{SETTINGS_HEADER}070109"
@@ -408,11 +408,16 @@ class SwitchbotMeterPro(SwitchbotDevice):
         self._validate_result("show_battery_level", result)
 
     async def set_display_data_source(self, outdoor: bool = False) -> None:
-        """Set the screen data source: indoor sensor readings or outdoor network display."""
-        mode_byte = "02" if outdoor else "01"
+        """Set the screen data source: indoor sensor readings (False) or outdoor sensor display (True)."""
+        mode_byte = "0202" if outdoor else "0101"
         payload = f"{COMMAND_DISPLAY_DATA_SOURCE}{mode_byte}"
         result = await self._send_command(payload)
         self._validate_result("set_display_data_source", result)
+
+    async def get_display_data_source(self) -> bool:
+        """Get whether LCD display is currently showing outdoor data (True) or indoor data (False)."""
+        settings = await self.get_device_settings()
+        return settings.get("outdoor_mode", False)
 
     _button_change_unit: bool = False
     _button_change_data_source: bool = False
@@ -460,13 +465,13 @@ class SwitchbotMeterPro(SwitchbotDevice):
         """Enable or disable temperature unit toggle on top physical button."""
         await self.set_button_function(
             change_unit=enable,
-            change_data_source=self._button_change_data_source,
+            change_data_source=None,
         )
 
     async def set_button_toggle_data_source(self, enable: bool) -> None:
         """Enable or disable data source toggle on top physical button."""
         await self.set_button_function(
-            change_unit=self._button_change_unit,
+            change_unit=None,
             change_data_source=enable,
         )
 
@@ -592,7 +597,9 @@ class SwitchbotMeterPro(SwitchbotDevice):
             "raw": result[1:].hex(),
         }
         if len(result) >= 18:
-            data["outdoor_mode"] = bool(result[1] & 0x80)
+            data["outdoor_mode"] = bool(
+                (result[1] & 0x0F) == 2 or ((result[1] >> 4) & 0x0F) == 2
+            )
             mac_1 = ":".join(f"{b:02x}" for b in result[3:9])
             mac_2 = ":".join(f"{b:02x}" for b in result[9:15])
             data["external_sensor_mac_1"] = mac_1 if mac_1 != "00:00:00:00:00:00" else None
@@ -606,8 +613,9 @@ class SwitchbotMeterPro(SwitchbotDevice):
         self,
         mac_address: str,
         slot: int = 1,
-        icon_mode: int = 0,
-        device_type: int = 0,
+        icon_mode: int | None = None,
+        device_type: int | None = None,
+        switch_display: bool = True,
     ) -> None:
         """
         Set the MAC address of an external sensor for local display.
@@ -615,8 +623,9 @@ class SwitchbotMeterPro(SwitchbotDevice):
         slot: 1 or 2.
         mac_address: standard MAC format (e.g. 'AA:BB:CC:DD:EE:FF') or 12 hex chars.
                      Pass empty string or '00:00:00:00:00:00' to clear/reset the slot.
-        icon_mode: 0x01 for IN, 0x02 for OUT, 0xFF for hold, 0x00 default.
-        device_type: 0x03 for Outdoor Meter, 0x01 for Meter, 0x02 for Plus, 0x00 default.
+        icon_mode: 0x01 for IN, 0x02 for OUT, 0xFF for hold. Defaults to 0x02 on pair, 0x01 on clear.
+        device_type: 0x03 for Outdoor Meter, 0x00 for unselected. Defaults to 0x03 on pair, 0x00 on clear.
+        switch_display: If True, automatically updates the active LCD display to OUT on pair, or IN on clear.
         """
         if slot not in (1, 2):
             raise ValueError(f"Slot must be 1 or 2, got {slot}")
@@ -631,12 +640,21 @@ class SwitchbotMeterPro(SwitchbotDevice):
         except ValueError as err:
             raise ValueError(f"Invalid hex in MAC address: {mac_address}") from err
 
+        is_clearing = clean_mac == "000000000000"
+        if icon_mode is None:
+            icon_mode = 0x01 if is_clearing else 0x02
+        if device_type is None:
+            device_type = 0x00 if is_clearing else 0x03
+
         slot_byte = f"{slot:02x}"
         icon_byte = f"{icon_mode:02x}"
         dev_byte = f"{device_type:02x}"
         payload = f"{SETTINGS_HEADER}0701{slot_byte}{icon_byte}{dev_byte}{clean_mac.lower()}"
         result = await self._send_command(payload)
         self._validate_result("set_external_sensor_mac", result)
+
+        if switch_display:
+            await self.set_display_data_source(outdoor=not is_clearing)
 
     async def get_temperature_humidity_offsets(self) -> dict[str, Any]:
         """Get temperature and humidity calibration offsets."""
