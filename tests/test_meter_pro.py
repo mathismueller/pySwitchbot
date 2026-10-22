@@ -924,3 +924,16 @@ async def test_refresh_measurements_accepts_05():
     device._send_command.return_value = bytes.fromhex("05")
     await device.refresh_measurements()
     device._send_command.assert_called_with("5701")
+
+
+def test_process_wosensorth_c():
+    from switchbot.adv_parsers.meter import process_wosensorth_c
+
+    # mfr_data: MAC (6) + seq (1) + battery/power (1: 0x80|50 = 0xb2) + temp (3) + extra (2) + co2 (2: 0x03e8 = 1000)
+    mfr_data = bytes.fromhex("b0e9fe576185fa b2 08943a 001a 03e8".replace(" ", ""))
+    parsed = process_wosensorth_c(None, mfr_data)
+    assert parsed["co2"] == 1000
+    assert parsed["power_type_c"] is True
+    assert parsed["battery"] == 50
+    assert parsed["temperature"] == 20.8
+    assert parsed["humidity"] == 58

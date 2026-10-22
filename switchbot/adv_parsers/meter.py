@@ -41,4 +41,7 @@ def process_wosensorth_c(data: bytes | None, mfr_data: bytes | None) -> dict[str
         co2 = CO2_UNPACK(co2_data)[0]
         if co2 <= CO2_MAX_PPM:
             _wosensorth_data["co2"] = co2
+        _wosensorth_data["power_type_c"] = bool(mfr_data[7] & 0x80)
+        if _wosensorth_data.get("battery") is None:
+            _wosensorth_data["battery"] = mfr_data[7] & 0x7F
     return _wosensorth_data
