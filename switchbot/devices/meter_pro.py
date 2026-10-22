@@ -1,3 +1,4 @@
+import asyncio
 from decimal import ROUND_HALF_UP, Decimal
 import time
 from typing import Any
@@ -13,6 +14,7 @@ COMMAND_SET_TIME_OFFSET = f"{SETTINGS_HEADER}0506"
 COMMAND_GET_TIME_OFFSET = f"{QUERY_HEADER}0506"
 MAX_TIME_OFFSET = (1 << 24) - 1
 
+COMMAND_REFRESH_MINIMUM_ACTION = "5701"
 COMMAND_GET_DEVICE_DATETIME = f"{QUERY_HEADER}01"
 COMMAND_GET_DEVICE_DATETIME_EPOCH = "57000603"
 COMMAND_SET_DEVICE_DATETIME = "57000503"
@@ -21,9 +23,15 @@ COMMAND_SET_DATE_FORMAT = f"{SETTINGS_HEADER}070107"
 COMMAND_SHOW_BATTERY_LEVEL = f"{SETTINGS_HEADER}070108"
 COMMAND_DISPLAY_DATA_SOURCE = f"{SETTINGS_HEADER}0701030f"
 COMMAND_BUTTON_FUNCTION = f"{SETTINGS_HEADER}070106"
+COMMAND_GET_BUTTON_FUNCTION = f"{QUERY_HEADER}0704"
+COMMAND_SET_FACTORY_TEMPERATURE_UNIT = f"{SETTINGS_HEADER}070109"
 COMMAND_TEMPERATURE_UPDATE_INTERVAL = f"{SETTINGS_HEADER}070105"
 COMMAND_COMFORTLEVEL = f"{SETTINGS_HEADER}020188"
 COMMAND_ALERT_SOUND = f"{SETTINGS_HEADER}0204"
+COMMAND_GET_ALERT_SOUND = f"{QUERY_HEADER}0204"
+COMMAND_SILENCE_ALARM = f"{SETTINGS_HEADER}0205"
+COMMAND_CLEAR_ALARM_STATE = f"{SETTINGS_HEADER}0206"
+COMMAND_GET_ACTIVE_ALARM_STATUS = f"{QUERY_HEADER}0205"
 COMMAND_GET_DEVICE_SETTINGS = f"{QUERY_HEADER}0701"
 COMMAND_GET_TEMPERATURE_HUMIDITY_OFFSETS = f"{QUERY_HEADER}03"
 COMMAND_SET_TEMPERATURE_HUMIDITY_OFFSETS = f"{SETTINGS_HEADER}03"
@@ -34,9 +42,17 @@ COMMAND_SET_WEATHER = f"{SETTINGS_HEADER}0601"
 COMMAND_FORCE_NEW_CO2_MEASUREMENT = f"{SETTINGS_HEADER}0b04"
 COMMAND_CALIBRATE_CO2_SENSOR = f"{SETTINGS_HEADER}0b02"
 COMMAND_CO2_THRESHOLDS = f"{SETTINGS_HEADER}020302"
+COMMAND_GET_CO2_THRESHOLDS = f"{QUERY_HEADER}020302"
 COMMAND_CO2_UPDATE_INTERVAL = f"{SETTINGS_HEADER}0b06"
 COMMAND_GET_CO2_UPDATE_INTERVAL = f"{QUERY_HEADER}0b04"
+COMMAND_SET_CO2_UPDATE_INTERVAL_PLUGGED = f"{SETTINGS_HEADER}0b01"
+COMMAND_GET_CO2_UPDATE_INTERVAL_PLUGGED = f"{QUERY_HEADER}0b03"
+COMMAND_GET_POWER_STATUS = f"{QUERY_HEADER}0b02"
+COMMAND_SET_CO2_REPORT_THRESHOLD = f"{SETTINGS_HEADER}0b05"
+COMMAND_GET_CO2_REPORT_THRESHOLD = f"{QUERY_HEADER}020303"
 COMMAND_ALERT_CO2 = f"{SETTINGS_HEADER}020301"
+COMMAND_GET_CO2_ALL_INFO = f"{QUERY_HEADER}020300"
+COMMAND_GET_CO2_ALARM_INFO = f"{QUERY_HEADER}020301"
 COMMAND_ALERT_TEMPERATURE_HUMIDITY = "570f44"
 
 # History Commands
@@ -44,6 +60,7 @@ COMMAND_INIT_HISTORY = "57090100000000"
 COMMAND_GET_HISTORY_INFO = f"{QUERY_HEADER}0801"
 COMMAND_GET_HISTORY_RANGE = f"{QUERY_HEADER}080201"
 COMMAND_GET_HISTORY_PAGE = f"{QUERY_HEADER}0803010000"
+COMMAND_ERASE_HISTORY = "57000402000101"
 
 
 def _weather_decimal(value: float | Decimal, name: str) -> Decimal:
@@ -98,6 +115,31 @@ def _encode_comfort_temperature(temp: int) -> str:
     else:
         val = abs(temp)
     return f"{val:02x}"
+
+
+def _encode_offset_temperature(temp_offset: float) -> tuple[int, int]:
+    """
+    Encode temperature offset for opcode 570f6803:
+    Byte 3 (integer & sign): bit 7 sign (1=+, 0=-), bits 6-0 integer value (0-127 C)
+    Byte 5 (decimal): bits 3-0 decimal value (0-9)
+    """
+    if abs(temp_offset) < 0.05:
+        return 0, 0
+    sign = 0x80 if temp_offset > 0 else 0x00
+    int_part = int(abs(temp_offset)) & 0x7F
+    dec_part = int(round(abs(temp_offset) * 10)) % 10
+    return sign | int_part, dec_part & 0x0F
+
+
+def _encode_offset_humidity(hum_offset: int) -> int:
+    """
+    Encode humidity offset for opcode 570f6803:
+    Byte 4: bit 7 sign (1=+, 0=-), bits 6-0 integer percentage (0-99%)
+    """
+    if hum_offset == 0:
+        return 0
+    sign = 0x80 if hum_offset > 0 else 0x00
+    return sign | (abs(hum_offset) & 0x7F)
 
 
 def parse_history_chunk(
@@ -199,6 +241,89 @@ class SwitchbotMeterPro(SwitchbotDevice):
         result = await self._send_command(payload)
         self._validate_result("set_time_offset", result)
 
+    async def refresh_measurements(self) -> None:
+        """
+        Trigger an immediate environmental measurement and display refresh
+        (executes minimum action command 0x57 0x01, simulating physical top button press).
+        """
+        result = await self._send_command(COMMAND_REFRESH_MINIMUM_ACTION)
+        self._validate_result("refresh_measurements", result, valid_codes={1, 5})
+
+    async def get_display_data(self) -> dict[str, Any]:
+        """
+        Get the current device status and telemetry as displayed (570f6901).
+
+        Decodes the complete multi-field frame up to 20 bytes (minimum 13 bytes):
+          - power_type_c (bool, CO2 model)
+          - battery (int 1-100%)
+          - comfort_status (str | None: "comfort", "dry", "wet", None)
+          - temperature (float in °C)
+          - temperature_unit (str: "C" or "F")
+          - humidity (int 1-99%)
+          - 12h_mode (bool)
+          - pm (bool)
+          - weather_icon (MeterProWeatherIcon | None)
+          - year, month, day, hour, minute, second
+          - co2 (int ppm, on CO2 model)
+          - co2_level (str: "good", "average", "poor", on CO2 model)
+          - co2_update_interval_min (int, on CO2 model)
+          - secondary_temperature, secondary_temperature_unit, secondary_humidity (if external sensor paired)
+        """
+        result = await self._send_command(COMMAND_GET_DEVICE_DATETIME)
+        result = self._validate_result("get_display_data", result, min_length=13)
+
+        comfort_map = {0: "comfort", 1: "dry", 2: "wet", 3: None}
+        comfort_idx = (result[2] >> 4) & 0x03
+        temp_dec = (result[2] & 0x0F) / 10.0
+        temp_sign = 1 if (result[3] & 0x80) else -1
+        temp_int = result[3] & 0x7F
+        temperature = round(temp_sign * (temp_int + temp_dec), 1)
+
+        weather_val = result[5] & 0x3F
+        try:
+            weather_icon = MeterProWeatherIcon(weather_val)
+        except ValueError:
+            weather_icon = None
+
+        data: dict[str, Any] = {
+            "raw": result[1:].hex(),
+            "power_type_c": bool(result[1] & 0x80),
+            "battery": result[1] & 0x7F,
+            "comfort_status": comfort_map.get(comfort_idx),
+            "temperature": temperature,
+            "temperature_unit": "F" if (result[4] & 0x80) else "C",
+            "humidity": result[4] & 0x7F,
+            "12h_mode": bool(result[5] & 0x80),
+            "pm": bool(result[5] & 0x40),
+            "weather_icon": weather_icon,
+            "year": (result[6] << 8) | result[7],
+            "month": result[8],
+            "day": result[9],
+            "hour": result[10],
+            "minute": result[11],
+            "second": result[12],
+        }
+
+        if len(result) >= 15:
+            data["co2"] = (result[13] << 8) | result[14]
+
+        if len(result) >= 16:
+            co2_grade_map = {0: "good", 1: "average", 2: "poor"}
+            data["co2_level"] = co2_grade_map.get(result[15], str(result[15]))
+
+        if len(result) >= 17:
+            data["co2_update_interval_min"] = result[16]
+
+        if len(result) >= 20:
+            sec_dec = (result[17] & 0x0F) / 10.0
+            sec_sign = 1 if (result[18] & 0x80) else -1
+            sec_int = result[18] & 0x7F
+            data["secondary_temperature"] = round(sec_sign * (sec_int + sec_dec), 1)
+            data["secondary_temperature_unit"] = "F" if (result[19] & 0x80) else "C"
+            data["secondary_humidity"] = result[19] & 0x7F
+
+        return data
+
     async def get_datetime(self) -> dict[str, Any]:
         """
         Get the current device time and settings as it is displayed.
@@ -212,19 +337,10 @@ class SwitchbotMeterPro(SwitchbotDevice):
                 - hour (int)
                 - minute (int)
                 - second (int)
+                - temperature, humidity, and additional display telemetry
 
         """
-        result = await self._send_command(COMMAND_GET_DEVICE_DATETIME)
-        result = self._validate_result("get_datetime", result, min_length=13)
-        return {
-            "12h_mode": bool(result[5] & 0b10000000),
-            "year": (result[6] << 8) + result[7],
-            "month": result[8],
-            "day": result[9],
-            "hour": result[10],
-            "minute": result[11],
-            "second": result[12],
-        }
+        return await self.get_display_data()
 
     async def get_datetime_epoch(self) -> dict[str, Any]:
         """Get the internal device UTC timestamp and timezone byte."""
@@ -301,19 +417,41 @@ class SwitchbotMeterPro(SwitchbotDevice):
     _button_change_unit: bool = False
     _button_change_data_source: bool = False
 
+    async def get_button_function(self) -> dict[str, bool]:
+        """Get the current physical button function configuration."""
+        result = await self._send_command(COMMAND_GET_BUTTON_FUNCTION)
+        result = self._validate_result("get_button_function", result, min_length=3)
+        unit_toggle = bool(result[1] == 0x00)
+        source_toggle = bool(result[2] == 0x01)
+        self._button_change_unit = unit_toggle
+        self._button_change_data_source = source_toggle
+        return {
+            "change_unit": unit_toggle,
+            "change_data_source": source_toggle,
+        }
+
     async def set_button_function(
-        self, change_unit: bool = False, change_data_source: bool = False
+        self,
+        change_unit: bool | None = None,
+        change_data_source: bool | None = None,
     ) -> None:
         """
         Sets the function of the top physical button:
-        Default (both options false): Only update/refresh data.
-        change_unit: switch between ℃ and ℉.
-        change_data_source: switch between display of indoor and outdoor readings.
+        change_unit: True to enable ℃/℉ toggle, False to disable, None to preserve setting.
+        change_data_source: True to enable indoor/outdoor display toggle, False to disable, None to preserve setting.
         """
-        self._button_change_unit = change_unit
-        self._button_change_data_source = change_data_source
-        change_unit_byte = "00" if change_unit else "01"
-        change_data_source_byte = "01" if change_data_source else "00"
+        if change_unit is None:
+            change_unit_byte = "ff"
+        else:
+            self._button_change_unit = change_unit
+            change_unit_byte = "00" if change_unit else "01"
+
+        if change_data_source is None:
+            change_data_source_byte = "ff"
+        else:
+            self._button_change_data_source = change_data_source
+            change_data_source_byte = "01" if change_data_source else "00"
+
         payload = f"{COMMAND_BUTTON_FUNCTION}{change_unit_byte}{change_data_source_byte}"
         result = await self._send_command(payload)
         self._validate_result("set_button_function", result)
@@ -331,6 +469,12 @@ class SwitchbotMeterPro(SwitchbotDevice):
             change_unit=self._button_change_unit,
             change_data_source=enable,
         )
+
+    async def set_factory_temperature_unit(self, fahrenheit: bool = False) -> None:
+        """Set factory default temperature unit (00: Celsius, 01: Fahrenheit)."""
+        val = "01" if fahrenheit else "00"
+        result = await self._send_command(f"{COMMAND_SET_FACTORY_TEMPERATURE_UNIT}{val}")
+        self._validate_result("set_factory_temperature_unit", result)
 
     async def get_temperature_update_interval(self) -> int:
         """Get the interval in which temperature and humidity are measured in seconds."""
@@ -376,20 +520,69 @@ class SwitchbotMeterPro(SwitchbotDevice):
         result = await self._send_command(payload)
         self._validate_result("set_comfortlevel", result)
 
-    async def set_alert_sound(self, sound_on: bool, volume: int) -> None:
+    async def get_alert_sound(self) -> dict[str, Any]:
+        """Get the current alarm sound and volume configuration."""
+        result = await self._send_command(COMMAND_GET_ALERT_SOUND)
+        result = self._validate_result("get_alert_sound", result, min_length=3)
+        vol = result[1]
+        mode = result[2]
+        return {
+            "volume": vol,
+            "sound_on": bool(mode == 0x02),
+            "flash_on": bool(mode in (0x01, 0x02)),
+        }
+
+    async def set_alert_sound(self, sound_on: bool, volume: int = 3) -> None:
         """
         Sets the Alert Mode.
         If sound_on is False the display flashes.
         If sound_on is True the device additionally beeps.
-        The volume is expected to be in {2, 3, 4} (2: low, 3: medium, 4: high).
+        The volume is expected to be in {1, 2, 3, 4, 0xFF} (1: off, 2: low, 3: medium, 4: high, 0xFF: preserve).
         """
-        if volume not in (2, 3, 4):
+        if volume not in (1, 2, 3, 4, 0xFF):
             raise ValueError("Volume must be 2 (low), 3 (medium), or 4 (high)")
 
         sound_on_byte = "02" if sound_on else "01"
         payload = f"{COMMAND_ALERT_SOUND}{volume:02x}{sound_on_byte}"
         result = await self._send_command(payload)
         self._validate_result("set_alert_sound", result)
+
+    async def silence_alarm(self, mute: bool = True, stop_flash: bool = True) -> None:
+        """
+        Silence or dismiss active alarm buzzer and/or screen flashing.
+        """
+        if mute and stop_flash:
+            mode = "01"
+        elif mute:
+            mode = "02"
+        elif stop_flash:
+            mode = "03"
+        else:
+            return
+        result = await self._send_command(f"{COMMAND_SILENCE_ALARM}{mode}")
+        self._validate_result("silence_alarm", result)
+
+    async def clear_alarm_state(self) -> None:
+        """Clear active alarm state on the device."""
+        result = await self._send_command(COMMAND_CLEAR_ALARM_STATE)
+        self._validate_result("clear_alarm_state", result)
+
+    async def get_active_alarm_status(self) -> dict[str, Any]:
+        """
+        Get current active alarm status.
+        0x00: Normal
+        0x01: Buzzer sounding and screen flashing
+        0x02: Buzzer sounding only
+        0x03: Screen flashing only
+        """
+        result = await self._send_command(COMMAND_GET_ACTIVE_ALARM_STATUS)
+        result = self._validate_result("get_active_alarm_status", result, min_length=2)
+        mode = result[1]
+        return {
+            "raw": mode,
+            "buzzer_active": mode in (1, 2),
+            "flash_active": mode in (1, 3),
+        }
 
     async def get_device_settings(self) -> dict[str, Any]:
         """Get the device configuration profile settings."""
@@ -409,13 +602,21 @@ class SwitchbotMeterPro(SwitchbotDevice):
                 data["button_change_data_source"] = bool(result[18] == 1)
         return data
 
-    async def set_external_sensor_mac(self, mac_address: str, slot: int = 1) -> None:
+    async def set_external_sensor_mac(
+        self,
+        mac_address: str,
+        slot: int = 1,
+        icon_mode: int = 0,
+        device_type: int = 0,
+    ) -> None:
         """
         Set the MAC address of an external sensor for local display.
 
         slot: 1 or 2.
         mac_address: standard MAC format (e.g. 'AA:BB:CC:DD:EE:FF') or 12 hex chars.
                      Pass empty string or '00:00:00:00:00:00' to clear/reset the slot.
+        icon_mode: 0x01 for IN, 0x02 for OUT, 0xFF for hold, 0x00 default.
+        device_type: 0x03 for Outdoor Meter, 0x01 for Meter, 0x02 for Plus, 0x00 default.
         """
         if slot not in (1, 2):
             raise ValueError(f"Slot must be 1 or 2, got {slot}")
@@ -431,7 +632,9 @@ class SwitchbotMeterPro(SwitchbotDevice):
             raise ValueError(f"Invalid hex in MAC address: {mac_address}") from err
 
         slot_byte = f"{slot:02x}"
-        payload = f"{SETTINGS_HEADER}0701{slot_byte}0000{clean_mac.lower()}"
+        icon_byte = f"{icon_mode:02x}"
+        dev_byte = f"{device_type:02x}"
+        payload = f"{SETTINGS_HEADER}0701{slot_byte}{icon_byte}{dev_byte}{clean_mac.lower()}"
         result = await self._send_command(payload)
         self._validate_result("set_external_sensor_mac", result)
 
@@ -441,12 +644,23 @@ class SwitchbotMeterPro(SwitchbotDevice):
         result = self._validate_result(
             "get_temperature_humidity_offsets", result, min_length=4
         )
-        temp_raw = result[2]
-        temp_offset = (
-            (temp_raw - 128) / 10.0 if temp_raw & 0x80 else (temp_raw / 10.0 if temp_raw else 0.0)
-        )
-        hum_raw = result[3]
-        hum_offset = (hum_raw - 128) if (hum_raw & 0x80 and result[1] & 0x80) else hum_raw
+        t_raw = result[1]
+        t_dec_raw = result[3] & 0x0F
+        t_int = t_raw & 0x7F
+        if t_raw == 0 and t_dec_raw == 0:
+            temp_offset = 0.0
+        else:
+            t_sign = 1 if (t_raw & 0x80) else -1
+            temp_offset = round(t_sign * (t_int + t_dec_raw / 10.0), 1)
+
+        h_raw = result[2]
+        h_int = h_raw & 0x7F
+        if h_raw == 0:
+            hum_offset = 0
+        else:
+            h_sign = 1 if (h_raw & 0x80) else -1
+            hum_offset = h_sign * h_int
+
         return {
             "temperature_offset": temp_offset,
             "humidity_offset": hum_offset,
@@ -459,28 +673,31 @@ class SwitchbotMeterPro(SwitchbotDevice):
         """
         Set temperature and humidity calibration offsets.
 
-        temperature_offset: float offset in 0.1 °C steps
-        humidity_offset: integer percentage offset in 1% steps
+        temperature_offset: float offset in 0.1 °C steps (-10.0 to +10.0)
+        humidity_offset: integer percentage offset in 1% steps (-30 to +30)
         """
-        b0 = 0x80 if humidity_offset != 0 else 0x00
-        if temperature_offset > 0:
-            b1 = int(round(temperature_offset * 10)) + 128
-        elif temperature_offset < 0:
-            b1 = abs(int(round(temperature_offset * 10)))
-        else:
-            b1 = 0
-
-        b2 = abs(humidity_offset) if humidity_offset >= 0 else (abs(humidity_offset) + 128)
+        b_temp_int, b_temp_dec = _encode_offset_temperature(temperature_offset)
+        b_hum = _encode_offset_humidity(humidity_offset)
         payload = (
-            f"{COMMAND_SET_TEMPERATURE_HUMIDITY_OFFSETS}{b0:02x}{b1:02x}{b2:02x}"
+            f"{COMMAND_SET_TEMPERATURE_HUMIDITY_OFFSETS}{b_temp_int:02x}{b_hum:02x}{b_temp_dec:02x}"
         )
         result = await self._send_command(payload)
         self._validate_result("set_temperature_humidity_offsets", result)
 
+    async def erase_history(self) -> None:
+        """Erase stored environmental history records."""
+        result = await self._send_command(COMMAND_ERASE_HISTORY)
+        self._validate_result("erase_history", result)
+
     def _validate_result(
-        self, op_name: str, result: bytes | None, min_length: int | None = None
+        self,
+        op_name: str,
+        result: bytes | None,
+        min_length: int | None = None,
+        valid_codes: set[int] | None = None,
     ) -> bytes:
-        if not self._check_command_result(result, 0, {1}):
+        expected = valid_codes if valid_codes is not None else {1}
+        if not self._check_command_result(result, 0, expected):
             raise SwitchbotOperationError(
                 f"{self.name}: Unexpected response code for {op_name} (result={result.hex() if result else 'None'} rssi={self.rssi})"
             )
@@ -495,10 +712,121 @@ class SwitchbotMeterPro(SwitchbotDevice):
 class SwitchbotMeterProCO2(SwitchbotMeterPro):
     """API to control Switchbot Meter Pro CO2."""
 
-    async def force_new_co2_measurement(self) -> None:
-        """Requests a new CO2 measurement, regardless of update interval."""
+    async def get_co2_data(self) -> dict[str, Any]:
+        """
+        Get complete live CO2 information (570f69020300), including current CO2 concentration in ppm.
+        """
+        result = await self._send_command(COMMAND_GET_CO2_ALL_INFO)
+        result = self._validate_result("get_co2_data", result, min_length=3)
+        data: dict[str, Any] = {
+            "co2": (result[1] << 8) | result[2],
+        }
+        if len(result) >= 12:
+            data.update(
+                {
+                    "alarm_enabled": bool(result[3] != 0),
+                    "alarm_mode": result[3],
+                    "co2_high": (result[4] << 8) | result[5],
+                    "co2_low": (result[6] << 8) | result[7],
+                    "quality_green_yellow": (result[8] << 8) | result[9],
+                    "quality_yellow_red": (result[10] << 8) | result[11],
+                }
+            )
+        if len(result) >= 14:
+            data["store_interval"] = (result[12] << 8) | result[13]
+        return data
+
+    async def force_new_co2_measurement(
+        self, readback: bool = False, timeout: float = 25.0
+    ) -> int | None:
+        """
+        Requests a new CO2 measurement, regardless of update interval.
+
+        Args:
+            readback: If True, waits for the NDIR measurement cycle and reads back the new CO2 ppm.
+            timeout: Maximum seconds to wait if readback is True.
+
+        Returns:
+            The measured CO2 concentration in ppm if readback=True, otherwise None.
+        """
         result = await self._send_command(COMMAND_FORCE_NEW_CO2_MEASUREMENT)
         self._validate_result("force_new_co2_measurement", result)
+        if not readback:
+            return None
+
+        # NDIR optical sensors take 10-25 seconds to perform a full measurement cycle.
+        start = time.monotonic()
+        await asyncio.sleep(2.0)
+        last_ppm = None
+        while time.monotonic() - start < timeout:
+            data = await self.get_co2_data()
+            if "co2" in data and data["co2"] is not None:
+                last_ppm = data["co2"]
+                if time.monotonic() - start >= 8.0:
+                    return last_ppm
+            await asyncio.sleep(3.0)
+        return last_ppm
+
+    async def get_power_status(self) -> dict[str, Any]:
+        """
+        Read whether device is running on Type-C USB constant power or batteries (Meter Pro CO2).
+        """
+        result = await self._send_command(COMMAND_GET_POWER_STATUS)
+        result = self._validate_result("get_power_status", result, min_length=2)
+        return {
+            "plugged_in": bool(result[1] == 1),
+            "raw": result[1],
+        }
+
+    async def set_co2_update_interval_plugged(self, seconds: int) -> None:
+        """Set CO2 update interval when connected to USB constant power."""
+        result = await self._send_command(
+            f"{COMMAND_SET_CO2_UPDATE_INTERVAL_PLUGGED}{seconds:04x}"
+        )
+        self._validate_result("set_co2_update_interval_plugged", result)
+
+    async def get_co2_update_interval_plugged(self) -> int:
+        """Get CO2 update interval when connected to USB constant power."""
+        result = await self._send_command(COMMAND_GET_CO2_UPDATE_INTERVAL_PLUGGED)
+        result = self._validate_result(
+            "get_co2_update_interval_plugged", result, min_length=3
+        )
+        return (result[1] << 8) | result[2]
+
+    async def set_co2_report_threshold(self, threshold_ppm: int) -> None:
+        """Set the threshold for CO2 reporting (in ppm)."""
+        result = await self._send_command(
+            f"{COMMAND_SET_CO2_REPORT_THRESHOLD}{threshold_ppm:04x}"
+        )
+        self._validate_result("set_co2_report_threshold", result)
+
+    async def get_co2_report_threshold(self) -> int:
+        """Get the threshold for CO2 reporting (in ppm)."""
+        result = await self._send_command(COMMAND_GET_CO2_REPORT_THRESHOLD)
+        result = self._validate_result(
+            "get_co2_report_threshold", result, min_length=3
+        )
+        return (result[1] << 8) | result[2]
+
+    async def get_co2_thresholds(self) -> dict[str, int]:
+        """Get air quality color boundary thresholds (green/yellow, yellow/red) in ppm."""
+        result = await self._send_command(COMMAND_GET_CO2_THRESHOLDS)
+        result = self._validate_result("get_co2_thresholds", result, min_length=5)
+        lower = (result[1] << 8) | result[2]
+        upper = (result[3] << 8) | result[4]
+        return {"lower": lower, "upper": upper}
+
+    async def get_co2_alarm_info(self) -> dict[str, Any]:
+        """Get CO2 alarm enable status, thresholds, and alarm state."""
+        result = await self._send_command(COMMAND_GET_CO2_ALARM_INFO)
+        result = self._validate_result("get_co2_alarm_info", result, min_length=7)
+        return {
+            "enabled": bool(result[1] != 0),
+            "mode": result[1],
+            "co2_high": (result[2] << 8) | result[3],
+            "co2_low": (result[4] << 8) | result[5],
+            "alarm_state": result[6] & 0x03,
+        }
 
     async def calibrate_co2_sensor(self) -> None:
         """

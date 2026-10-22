@@ -553,20 +553,35 @@ async def test_set_temperature_humidity_offsets():
     device = create_device()
     device._send_command.return_value = bytes.fromhex("01")
 
+    # Temp +0.2 C, Humidity +1% (matches recording2.pklg: 570f6803808102)
     await device.set_temperature_humidity_offsets(
-        temperature_offset=0.2, humidity_offset=0
-    )
-    device._send_command.assert_called_with("570f6803008200")
-
-    await device.set_temperature_humidity_offsets(
-        temperature_offset=0.1, humidity_offset=2
+        temperature_offset=0.2, humidity_offset=1
     )
     device._send_command.assert_called_with("570f6803808102")
 
+    # Temp 0.0 C, Humidity +2% (matches recording2.pklg: 570f6803008200)
+    await device.set_temperature_humidity_offsets(
+        temperature_offset=0.0, humidity_offset=2
+    )
+    device._send_command.assert_called_with("570f6803008200")
+
+    # Zero offsets (matches recording2.pklg: 570f6803000000)
     await device.set_temperature_humidity_offsets(
         temperature_offset=0.0, humidity_offset=0
     )
     device._send_command.assert_called_with("570f6803000000")
+
+    # Multi-degree offset (+1.5 C, 0%)
+    await device.set_temperature_humidity_offsets(
+        temperature_offset=1.5, humidity_offset=0
+    )
+    device._send_command.assert_called_with("570f6803810005")
+
+    # Negative offsets (-1.2 C, -5%)
+    await device.set_temperature_humidity_offsets(
+        temperature_offset=-1.2, humidity_offset=-5
+    )
+    device._send_command.assert_called_with("570f6803010502")
 
 
 @pytest.mark.asyncio
@@ -694,3 +709,218 @@ async def test_get_basic_info():
     device._send_command.assert_called_with(key="5702", retry=device._retry_count)
     assert info["battery"] == 100
     assert info["firmware"] == 2.1
+
+
+@pytest.mark.asyncio
+async def test_refresh_measurements():
+    device = create_device()
+    device._send_command.return_value = bytes.fromhex("01")
+
+    await device.refresh_measurements()
+    device._send_command.assert_called_with("5701")
+
+
+@pytest.mark.asyncio
+async def test_get_display_data_meter_pro():
+    device = create_device()
+    # 01 (status), 64 (100% battery, no Type-C), 05 (comfort=0, dec=5), 97 (+23 C), 36 (humidity 54%),
+    # 01 (24h, sunny), 07ea (2026), 0a (Oct), 16 (22), 0a (10), 1e (30), 00 (00 sec)
+    device._send_command.return_value = bytes.fromhex(
+        "01640597360107ea0a160a1e00"
+    )
+
+    data = await device.get_display_data()
+    device._send_command.assert_called_with("570f6901")
+    assert data["battery"] == 100
+    assert data["power_type_c"] is False
+    assert data["comfort_status"] == "comfort"
+    assert data["temperature"] == 23.5
+    assert data["humidity"] == 54
+    assert data["year"] == 2026
+    assert data["month"] == 10
+    assert data["day"] == 22
+
+
+@pytest.mark.asyncio
+async def test_get_display_data_meter_pro_co2():
+    device = create_device()
+    # 20 bytes full payload:
+    # 01, e4 (Type-C plugged + 100%), 12 (dry=1, dec=2), 95 (+21 C), 2c (44%),
+    # 82 (12h, partly cloudy), 07ea (2026), 0a (10), 16 (22), 0e (14), 2d (45), 15 (21s),
+    # 0352 (850 ppm), 00 (good), 05 (5 min interval), 03 (ext dec=3), 8e (+14 C), 52 (82%)
+    device._send_command.return_value = bytes.fromhex(
+        "01e412952c8207ea0a160e2d1503520005038e52"
+    )
+
+    data = await device.get_display_data()
+    assert data["power_type_c"] is True
+    assert data["battery"] == 100
+    assert data["comfort_status"] == "dry"
+    assert data["temperature"] == 21.2
+    assert data["humidity"] == 44
+    assert data["co2"] == 850
+    assert data["co2_level"] == "good"
+    assert data["co2_update_interval_min"] == 5
+    assert data["secondary_temperature"] == 14.3
+    assert data["secondary_humidity"] == 82
+
+
+@pytest.mark.asyncio
+async def test_get_button_function():
+    device = create_device()
+    # 01 (status), 00 (unit enabled), 01 (source enabled)
+    device._send_command.return_value = bytes.fromhex("010001")
+
+    btn = await device.get_button_function()
+    device._send_command.assert_called_with("570f690704")
+    assert btn["change_unit"] is True
+    assert btn["change_data_source"] is True
+
+
+@pytest.mark.asyncio
+async def test_set_button_function_preserve():
+    device = create_device()
+    device._send_command.return_value = bytes.fromhex("01")
+
+    # Preserve unit toggle, set source toggle to True
+    await device.set_button_function(change_unit=None, change_data_source=True)
+    device._send_command.assert_called_with("570f68070106ff01")
+
+    # Set unit toggle to False, preserve source toggle
+    await device.set_button_function(change_unit=False, change_data_source=None)
+    device._send_command.assert_called_with("570f6807010601ff")
+
+
+@pytest.mark.asyncio
+async def test_alarm_management():
+    device = create_device()
+    device._send_command.return_value = bytes.fromhex("01")
+
+    # Silence alarm: mute + stop flash
+    await device.silence_alarm(mute=True, stop_flash=True)
+    device._send_command.assert_called_with("570f68020501")
+
+    # Silence alarm: mute only
+    await device.silence_alarm(mute=True, stop_flash=False)
+    device._send_command.assert_called_with("570f68020502")
+
+    # Clear alarm state
+    await device.clear_alarm_state()
+    device._send_command.assert_called_with("570f680206")
+
+    # Get active alarm status (01: beep + flash active)
+    device._send_command.return_value = bytes.fromhex("0101")
+    status = await device.get_active_alarm_status()
+    device._send_command.assert_called_with("570f690205")
+    assert status["buzzer_active"] is True
+    assert status["flash_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_alert_sound():
+    device = create_device()
+    # 01, 03 (medium vol), 02 (sound + flash)
+    device._send_command.return_value = bytes.fromhex("010302")
+
+    sound = await device.get_alert_sound()
+    device._send_command.assert_called_with("570f690204")
+    assert sound["volume"] == 3
+    assert sound["sound_on"] is True
+    assert sound["flash_on"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_power_status():
+    device = create_device()
+    # Plugged in (Type-C)
+    device._send_command.return_value = bytes.fromhex("0101")
+    pwr = await device.get_power_status()
+    device._send_command.assert_called_with("570f690b02")
+    assert pwr["plugged_in"] is True
+
+    # Battery
+    device._send_command.return_value = bytes.fromhex("0100")
+    pwr = await device.get_power_status()
+    assert pwr["plugged_in"] is False
+
+
+@pytest.mark.asyncio
+async def test_co2_intervals_and_thresholds():
+    device = create_device()
+    device._send_command.return_value = bytes.fromhex("01")
+
+    # Plugged-in interval write
+    await device.set_co2_update_interval_plugged(60)
+    device._send_command.assert_called_with("570f680b01003c")
+
+    # Plugged-in interval read
+    device._send_command.return_value = bytes.fromhex("01003c")
+    val = await device.get_co2_update_interval_plugged()
+    device._send_command.assert_called_with("570f690b03")
+    assert val == 60
+
+    # CO2 report threshold write & read
+    device._send_command.return_value = bytes.fromhex("01")
+    await device.set_co2_report_threshold(50)
+    device._send_command.assert_called_with("570f680b050032")
+
+    device._send_command.return_value = bytes.fromhex("010032")
+    val_th = await device.get_co2_report_threshold()
+    device._send_command.assert_called_with("570f69020303")
+    assert val_th == 50
+
+    # Read CO2 air quality boundary thresholds
+    device._send_command.return_value = bytes.fromhex("01025804b0")  # 600, 1200
+    th = await device.get_co2_thresholds()
+    device._send_command.assert_called_with("570f69020302")
+    assert th["lower"] == 600
+    assert th["upper"] == 1200
+
+    # Read CO2 alarm info
+    device._send_command.return_value = bytes.fromhex("010307d003e800")
+    alarm_info = await device.get_co2_alarm_info()
+    device._send_command.assert_called_with("570f69020301")
+    assert alarm_info["enabled"] is True
+    assert alarm_info["co2_high"] == 2000
+    assert alarm_info["co2_low"] == 1000
+    assert alarm_info["alarm_state"] == 0
+
+
+@pytest.mark.asyncio
+async def test_factory_temp_unit_and_erase():
+    device = create_device()
+    device._send_command.return_value = bytes.fromhex("01")
+
+    await device.set_factory_temperature_unit(fahrenheit=True)
+    device._send_command.assert_called_with("570f6807010901")
+
+    await device.set_factory_temperature_unit(fahrenheit=False)
+    device._send_command.assert_called_with("570f6807010900")
+
+    await device.erase_history()
+    device._send_command.assert_called_with("57000402000101")
+
+
+@pytest.mark.asyncio
+async def test_get_co2_data():
+    device = create_device()
+    # Raw frame: 01 0195 00 04b0 0190 03e8 0578 0708
+    device._send_command.return_value = bytes.fromhex("0101950004b0019003e805780708")
+
+    data = await device.get_co2_data()
+    device._send_command.assert_called_with("570f69020300")
+    assert data["co2"] == 405
+    assert data["alarm_enabled"] is False
+    assert data["co2_high"] == 1200
+    assert data["co2_low"] == 400
+    assert data["quality_green_yellow"] == 1000
+    assert data["quality_yellow_red"] == 1400
+    assert data["store_interval"] == 1800
+
+
+@pytest.mark.asyncio
+async def test_refresh_measurements_accepts_05():
+    device = create_device()
+    device._send_command.return_value = bytes.fromhex("05")
+    await device.refresh_measurements()
+    device._send_command.assert_called_with("5701")
