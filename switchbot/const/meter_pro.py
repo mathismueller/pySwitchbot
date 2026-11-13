@@ -12,3 +12,12 @@ class MeterProWeatherIcon(Enum):
     POURING = 5
     SNOWY = 6
     HEAVY_SNOW = 7
+
+
+class MeterProDisplaySource(Enum):
+    """Data sources for a Meter Pro display slot."""
+
+    NONE = 0x00
+    OUTDOOR_METER = 0x03
+    SENSOR = 0x05
+    LOCAL_WEATHER = 0x06

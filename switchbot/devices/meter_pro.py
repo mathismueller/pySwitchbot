@@ -3,7 +3,7 @@ from decimal import ROUND_HALF_UP, Decimal
 import time
 from typing import Any
 
-from ..const.meter_pro import MeterProWeatherIcon
+from ..const.meter_pro import MeterProDisplaySource, MeterProWeatherIcon
 from ..helpers import parse_uint24_be
 from .device import SwitchbotDevice, SwitchbotOperationError
 
@@ -202,6 +202,13 @@ def parse_history_chunk(
             }
         )
     return records
+
+
+def _decode_display_source(value: int) -> MeterProDisplaySource | int:
+    try:
+        return MeterProDisplaySource(value)
+    except ValueError:
+        return value
 
 
 class SwitchbotMeterPro(SwitchbotDevice):
@@ -408,14 +415,14 @@ class SwitchbotMeterPro(SwitchbotDevice):
         self._validate_result("show_battery_level", result)
 
     async def set_display_data_source(self, outdoor: bool = False) -> None:
-        """Set the screen data source: indoor sensor readings (False) or outdoor sensor display (True)."""
+        """Set the IN (False) or OUT (True) icon of both display slots, not the source."""
         mode_byte = "0202" if outdoor else "0101"
         payload = f"{COMMAND_DISPLAY_DATA_SOURCE}{mode_byte}"
         result = await self._send_command(payload)
         self._validate_result("set_display_data_source", result)
 
     async def get_display_data_source(self) -> bool:
-        """Get whether LCD display is currently showing outdoor data (True) or indoor data (False)."""
+        """Get whether either display slot shows the OUT icon."""
         settings = await self.get_device_settings()
         return settings.get("outdoor_mode", False)
 
@@ -605,9 +612,52 @@ class SwitchbotMeterPro(SwitchbotDevice):
             data["external_sensor_mac_1"] = mac_1 if mac_1 != "00:00:00:00:00:00" else None
             data["external_sensor_mac_2"] = mac_2 if mac_2 != "00:00:00:00:00:00" else None
             data["temperature_update_interval"] = int.from_bytes(result[15:17], "big")
-            if len(result) >= 19:
-                data["button_change_data_source"] = bool(result[18] == 1)
+            data["display_slots"] = [
+                {
+                    "source": _decode_display_source(result[2] >> 4),
+                    "outdoor_icon": result[1] >> 4 == 0x02,
+                },
+                {
+                    "source": _decode_display_source(result[2] & 0x0F),
+                    "outdoor_icon": result[1] & 0x0F == 0x02,
+                },
+            ]
         return data
+
+    async def set_display_source(
+        self,
+        slot: int,
+        source: MeterProDisplaySource,
+        outdoor_icon: bool,
+        mac_address: str = "",
+    ) -> None:
+        """
+        Set the data source and IN/OUT icon of a display slot.
+
+        On Meter Pro CO2 the screen shows slot 2; with the top button data source
+        toggle enabled, the button switches between the two slots.
+        mac_address is only used by MeterProDisplaySource.OUTDOOR_METER.
+        """
+        if slot not in (1, 2):
+            raise ValueError(f"Slot must be 1 or 2, got {slot}")
+        mac = mac_address.replace(":", "").replace("-", "").lower() or "0" * 12
+        if len(mac) != 12:
+            raise ValueError(f"Invalid MAC address format: {mac_address}")
+        bytes.fromhex(mac)
+
+        icon = 0x02 if outdoor_icon else 0x01
+        payload = f"{SETTINGS_HEADER}0701{slot:02x}{icon:02x}{source.value:02x}{mac}"
+        result = await self._send_command(payload)
+        self._validate_result("set_display_source", result)
+
+        # Writing the source can reset the slot's icon, so set the icons again.
+        slots = (await self.get_device_settings())["display_slots"]
+        icons = [0x02 if s["outdoor_icon"] else 0x01 for s in slots]
+        icons[slot - 1] = icon
+        result = await self._send_command(
+            f"{COMMAND_DISPLAY_DATA_SOURCE}{icons[0]:02x}{icons[1]:02x}"
+        )
+        self._validate_result("set_display_source", result)
 
     async def set_external_sensor_mac(
         self,
