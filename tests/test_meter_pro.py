@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, call
 import pytest
 from bleak.backends.device import BLEDevice
 
-from switchbot import SwitchbotOperationError
+from switchbot import MeterProDisplaySource, SwitchbotOperationError
 from switchbot.devices.meter_pro import (
     MAX_TIME_OFFSET,
     SwitchbotMeterPro,
@@ -970,3 +970,87 @@ def test_process_wosensorth_c():
     assert parsed["battery"] == 50
     assert parsed["temperature"] == 20.8
     assert parsed["humidity"] == 58
+
+
+@pytest.mark.asyncio
+async def test_get_device_settings_display_slots():
+    device = create_device()
+    device._send_command.return_value = bytes.fromhex(
+        "011256000000000000000000000000025800ff00"
+    )
+    settings = await device.get_device_settings()
+    assert settings["display_slots"] == [
+        {"source": MeterProDisplaySource.SENSOR, "outdoor_icon": False},
+        {"source": MeterProDisplaySource.LOCAL_WEATHER, "outdoor_icon": True},
+    ]
+    assert "button_change_data_source" not in settings
+
+    device._send_command.return_value = bytes.fromhex(
+        "011247000000000000000000000000025800ff00"
+    )
+    settings = await device.get_device_settings()
+    assert settings["display_slots"][0]["source"] == 4
+    assert settings["display_slots"][1]["source"] == 7
+
+
+@pytest.mark.asyncio
+async def test_set_display_source():
+    device = create_device()
+    device._send_command.side_effect = [
+        bytes.fromhex("01"),
+        bytes.fromhex("011216000000000000000000000000025800ff00"),
+        bytes.fromhex("01"),
+        bytes.fromhex("010109824a09824a008000000080000000"),
+        bytes.fromhex("01"),
+    ]
+    await device.set_display_source(2, MeterProDisplaySource.LOCAL_WEATHER, True)
+    assert device._send_command.call_args_list == [
+        call("570f680701020206000000000000"),
+        call("570f690701"),
+        call("570f680701030102"),
+        call("570f6906"),
+        call("570f6806010109824a"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_set_display_source_local_weather_never_set():
+    device = create_device()
+    device._send_command.side_effect = [
+        bytes.fromhex("01"),
+        bytes.fromhex("011216000000000000000000000000025800ff00"),
+        bytes.fromhex("01"),
+        bytes.fromhex("0164000000000000"),
+    ]
+    await device.set_display_source(2, MeterProDisplaySource.LOCAL_WEATHER, True)
+    assert device._send_command.call_args_list[-1] == call("570f6906")
+
+
+@pytest.mark.asyncio
+async def test_set_display_source_outdoor_meter():
+    device = create_device()
+    device._send_command.side_effect = [
+        bytes.fromhex("01"),
+        bytes.fromhex("012236aabbccddeeff000000000000025800ff00"),
+        bytes.fromhex("01"),
+    ]
+    await device.set_display_source(
+        1, MeterProDisplaySource.OUTDOOR_METER, False, "AA:BB:CC:DD:EE:FF"
+    )
+    assert device._send_command.call_args_list == [
+        call("570f680701010103aabbccddeeff"),
+        call("570f690701"),
+        call("570f680701030102"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("slot", "mac", "message"),
+    [(0, "", "Slot must be"), (3, "", "Slot must be"), (1, "aabb", "Invalid MAC")],
+)
+async def test_set_display_source_invalid(slot, mac, message):
+    device = create_device()
+    with pytest.raises(ValueError, match=message):
+        await device.set_display_source(slot, MeterProDisplaySource.SENSOR, False, mac)
+    device._send_command.assert_not_called()

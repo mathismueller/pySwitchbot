@@ -27,7 +27,7 @@ from .light import (
 
 # Preserve old LockStatus export for backwards compatibility
 from .lock import LockStatus
-from .meter_pro import MeterProWeatherIcon
+from .meter_pro import MeterProDisplaySource, MeterProWeatherIcon
 
 DEFAULT_RETRY_COUNT = 3
 DEFAULT_RETRY_TIMEOUT = 1
@@ -160,6 +160,7 @@ __all__ = [
     "HumidifierMode",
     "HumidifierWaterLevel",
     "LockStatus",
+    "MeterProDisplaySource",
     "MeterProWeatherIcon",
     "NightLightState",
     "SmartThermostatRadiatorMode",
