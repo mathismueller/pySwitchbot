@@ -1000,13 +1000,30 @@ async def test_set_display_source():
         bytes.fromhex("01"),
         bytes.fromhex("011216000000000000000000000000025800ff00"),
         bytes.fromhex("01"),
+        bytes.fromhex("010109824a09824a008000000080000000"),
+        bytes.fromhex("01"),
     ]
     await device.set_display_source(2, MeterProDisplaySource.LOCAL_WEATHER, True)
     assert device._send_command.call_args_list == [
         call("570f680701020206000000000000"),
         call("570f690701"),
         call("570f680701030102"),
+        call("570f6906"),
+        call("570f6806010109824a"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_set_display_source_local_weather_never_set():
+    device = create_device()
+    device._send_command.side_effect = [
+        bytes.fromhex("01"),
+        bytes.fromhex("011216000000000000000000000000025800ff00"),
+        bytes.fromhex("01"),
+        bytes.fromhex("0164000000000000"),
+    ]
+    await device.set_display_source(2, MeterProDisplaySource.LOCAL_WEATHER, True)
+    assert device._send_command.call_args_list[-1] == call("570f6906")
 
 
 @pytest.mark.asyncio

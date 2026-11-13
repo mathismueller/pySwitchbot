@@ -659,6 +659,20 @@ class SwitchbotMeterPro(SwitchbotDevice):
         )
         self._validate_result("set_display_source", result)
 
+        if source is MeterProDisplaySource.LOCAL_WEATHER:
+            # Selecting local weather blanks the slot until weather is written
+            # again, so write back the stored weather. Icon 100: never set.
+            weather = self._validate_result(
+                "set_display_source",
+                await self._send_command(COMMAND_GET_WEATHER),
+                min_length=5,
+            )
+            if weather[1] != 100:
+                result = await self._send_command(
+                    f"{COMMAND_SET_WEATHER}{weather[1:5].hex()}"
+                )
+                self._validate_result("set_display_source", result)
+
     async def set_external_sensor_mac(
         self,
         mac_address: str,
